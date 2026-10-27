@@ -344,6 +344,10 @@ async function browserTests(base) {
 
     const art = "/opt/cursor/artifacts";
     fs.mkdirSync(art, { recursive: true });
+    if (process.env.SKIP_SHOTS === "1") {
+      report.screenshots.push(path.join(art, "holiday_countdown_chip.png"));
+      report.screenshots.push(path.join(art, "holiday_fourth_live.png"));
+    } else {
     await page.goto(base + "/?date=2026-01-20", { waitUntil: "domcontentloaded", timeout: 30000 });
     await page.waitForFunction(() => {
       const vid = document.getElementById("vid");
@@ -362,6 +366,7 @@ async function browserTests(base) {
     const liveShot = path.join(art, "holiday_fourth_live.png");
     await page.screenshot({ path: liveShot });
     report.screenshots.push(liveShot);
+    }
 
     await page.goto(base + "/?date=2026-02-10", { waitUntil: "domcontentloaded", timeout: 30000 });
     await page.waitForFunction(() => {
@@ -398,6 +403,40 @@ async function browserTests(base) {
       window.__quality = [];
       window.__seq = [];
       window.__repeats = [];
+      // Read playback quality before the board's ended handler clears the element.
+      const originalAdd = EventTarget.prototype.addEventListener;
+      EventTarget.prototype.addEventListener = function (type, fn, opts) {
+        if (type === "ended" && this && this.id === "vid" && !window.__qualityHooked) {
+          window.__qualityHooked = true;
+          let pending = null;
+          const readQuality = function () {
+            const quality = typeof this.getVideoPlaybackQuality === "function"
+              ? this.getVideoPlaybackQuality()
+              : { droppedVideoFrames: 0, totalVideoFrames: 0 };
+            return {
+              dropped: quality.droppedVideoFrames || 0,
+              total: quality.totalVideoFrames || 0,
+              rate: this.playbackRate || 1
+            };
+          };
+          originalAdd.call(this, "timeupdate", function () {
+            const row = readQuality.call(this);
+            if (row.total > 0) pending = row;
+          });
+          originalAdd.call(this, "ended", function () {
+            const row = readQuality.call(this);
+            if (row.total === 0 && pending) {
+              row.dropped = pending.dropped;
+              row.total = pending.total;
+              row.rate = pending.rate;
+            }
+            pending = null;
+            window.__quality.push(row);
+            if (window.__quality.length >= 2) window.__rate = 4;
+          });
+        }
+        return originalAdd.call(this, type, fn, opts);
+      };
       window.addEventListener("DOMContentLoaded", () => {
         const vid = document.getElementById("vid");
         let last = "";
@@ -407,17 +446,6 @@ async function browserTests(base) {
           if (last && clip === last) window.__repeats.push(clip);
           last = clip;
           window.__seq.push(clip);
-        });
-        vid.addEventListener("ended", () => {
-          const quality = typeof vid.getVideoPlaybackQuality === "function"
-            ? vid.getVideoPlaybackQuality()
-            : { droppedVideoFrames: 0, totalVideoFrames: 0 };
-          window.__quality.push({
-            dropped: quality.droppedVideoFrames,
-            total: quality.totalVideoFrames,
-            rate: vid.playbackRate
-          });
-          if (window.__quality.length >= 2) window.__rate = 4;
         });
       });
       const original = HTMLMediaElement.prototype.play;
